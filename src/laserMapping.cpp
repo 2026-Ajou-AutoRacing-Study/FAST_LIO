@@ -592,17 +592,30 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
     odomAftMapped.child_frame_id = "body";
     odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);// ros::Time().fromSec(lidar_end_time);
     set_posestamp(odomAftMapped.pose);
-    pubOdomAftMapped.publish(odomAftMapped);
+
+    // state_point.vel is the body-origin velocity expressed in camera_init.
+    // nav_msgs/Odometry requires twist to be expressed in child_frame_id (body).
+    const M3D rotation_camera_body = state_point.rot.toRotationMatrix();
+    const V3D velocity_body = rotation_camera_body.transpose() * state_point.vel;
+    const V3D angular_velocity_body = p_imu->get_angular_velocity();
+    odomAftMapped.twist.twist.linear.x = velocity_body(0);
+    odomAftMapped.twist.twist.linear.y = velocity_body(1);
+    odomAftMapped.twist.twist.linear.z = velocity_body(2);
+    odomAftMapped.twist.twist.angular.x = angular_velocity_body(0);
+    odomAftMapped.twist.twist.angular.y = angular_velocity_body(1);
+    odomAftMapped.twist.twist.angular.z = angular_velocity_body(2);
+
     auto P = kf.get_P();
+    odomAftMapped.pose.covariance.fill(0.0);
+    odomAftMapped.twist.covariance.fill(0.0);
     for (int i = 0; i < 6; i ++)
     {
-        int k = i < 3 ? i + 3 : i - 3;
-        odomAftMapped.pose.covariance[i*6 + 0] = P(k, 3);
-        odomAftMapped.pose.covariance[i*6 + 1] = P(k, 4);
-        odomAftMapped.pose.covariance[i*6 + 2] = P(k, 5);
-        odomAftMapped.pose.covariance[i*6 + 3] = P(k, 0);
-        odomAftMapped.pose.covariance[i*6 + 4] = P(k, 1);
-        odomAftMapped.pose.covariance[i*6 + 5] = P(k, 2);
+        for (int j = 0; j < 6; j ++)
+        {
+            // FAST-LIO error-state order and ROS pose covariance order are
+            // both [position xyz, rotation xyz] for these first six states.
+            odomAftMapped.pose.covariance[i * 6 + j] = P(i, j);
+        }
     }
 
     static tf::TransformBroadcaster br;
@@ -617,6 +630,7 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
     q.setZ(odomAftMapped.pose.pose.orientation.z);
     transform.setRotation( q );
     br.sendTransform( tf::StampedTransform( transform, odomAftMapped.header.stamp, "camera_init", "body" ) );
+    pubOdomAftMapped.publish(odomAftMapped);
 }
 
 void publish_path(const ros::Publisher pubPath)
